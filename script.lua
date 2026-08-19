@@ -30,91 +30,120 @@ local CoreGui = game:GetService("CoreGui")
 local HttpService = game:GetService("HttpService")
 local StatsService = game:GetService("Stats")
 
-local LP = Players.LocalPlayer
-repeat task.wait() until LP
-
--- BOOT UI appears before config/network initialization so execution can never
--- fail silently just because PlayerGui/Networking is late.
-local BootGui, BootLabel
-do
-    local parent
-    pcall(function()
-        if gethui then
-            local h = gethui()
-            if h then parent = h end
-        end
-    end)
-    if not parent then
-        parent = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 10)
-    end
-    if not parent then
-        pcall(function() parent = CoreGui end)
-    end
-
-    if parent then
-        local old = parent:FindFirstChild("OneClickGAG2Boot")
-        if old then old:Destroy() end
-
-        BootGui = Instance.new("ScreenGui")
-        BootGui.Name = "OneClickGAG2Boot"
-        BootGui.ResetOnSpawn = false
-        BootGui.IgnoreGuiInset = true
-        BootGui.DisplayOrder = 100000
-        BootGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-        BootGui.Parent = parent
-
-        local frame = Instance.new("Frame")
-        frame.AnchorPoint = Vector2.new(0.5,0)
-        frame.Position = UDim2.new(0.5,0,0,18)
-        frame.Size = UDim2.fromOffset(430,56)
-        frame.BackgroundColor3 = Color3.fromRGB(16,17,22)
-        frame.BorderSizePixel = 0
-        frame.Parent = BootGui
-
-        local corner = Instance.new("UICorner")
-        corner.CornerRadius = UDim.new(0,12)
-        corner.Parent = frame
-
-        local stroke = Instance.new("UIStroke")
-        stroke.Color = Color3.fromRGB(56,127,83)
-        stroke.Thickness = 2
-        stroke.Parent = frame
-
-        BootLabel = Instance.new("TextLabel")
-        BootLabel.BackgroundTransparency = 1
-        BootLabel.Position = UDim2.fromOffset(12,0)
-        BootLabel.Size = UDim2.new(1,-24,1,0)
-        BootLabel.Font = Enum.Font.Code
-        BootLabel.TextSize = 16
-        BootLabel.TextColor3 = Color3.fromRGB(230,235,230)
-        BootLabel.TextXAlignment = Enum.TextXAlignment.Left
-        BootLabel.Text = "OneClick GAG2 | Booting..."
-        BootLabel.Parent = frame
-    end
-end
-
-local function setBoot(text)
-    if BootLabel and BootLabel.Parent then
-        BootLabel.Text = "OneClick GAG2 | " .. tostring(text)
-    end
-end
-
-setBoot("checking config")
-
+-- Resolve config before waiting for LocalPlayer.
 local ENV = (getgenv and getgenv()) or _G
 local Config = ENV.Config
 
-if type(Config) ~= "table" then
-    setBoot("CONFIG MISSING - put getgenv().Config above loader")
-    warn("[OneClick GAG2] getgenv().Config is missing. Put config above loader.")
+-- Boot UI first: even if LocalPlayer/Networking is late, execute is visible.
+local BootGui, BootLabel
+
+local function resolveBootParent()
+    local parent
+    pcall(function()
+        if gethui then
+            local h=gethui()
+            if h then parent=h end
+        end
+    end)
+    if not parent then pcall(function() parent=CoreGui end) end
+    if not parent then
+        local p=Players.LocalPlayer
+        if p then parent=p:FindFirstChildOfClass("PlayerGui") end
+    end
+    return parent
+end
+
+local function makeBootGui()
+    if BootGui and BootGui.Parent then return true end
+    local parent=resolveBootParent()
+    if not parent then return false end
+
+    local old=parent:FindFirstChild("OneClickGAG2Boot")
+    if old then pcall(function() old:Destroy() end) end
+
+    BootGui=Instance.new("ScreenGui")
+    BootGui.Name="OneClickGAG2Boot"
+    BootGui.ResetOnSpawn=false
+    BootGui.IgnoreGuiInset=true
+    BootGui.DisplayOrder=100000
+    BootGui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+    BootGui.Parent=parent
+
+    local frame=Instance.new("Frame")
+    frame.AnchorPoint=Vector2.new(0.5,0)
+    frame.Position=UDim2.new(0.5,0,0,18)
+    frame.Size=UDim2.fromOffset(470,58)
+    frame.BackgroundColor3=Color3.fromRGB(16,17,22)
+    frame.BorderSizePixel=0
+    frame.Parent=BootGui
+
+    local corner=Instance.new("UICorner")
+    corner.CornerRadius=UDim.new(0,12)
+    corner.Parent=frame
+
+    local stroke=Instance.new("UIStroke")
+    stroke.Color=Color3.fromRGB(56,127,83)
+    stroke.Thickness=2
+    stroke.Parent=frame
+
+    BootLabel=Instance.new("TextLabel")
+    BootLabel.BackgroundTransparency=1
+    BootLabel.Position=UDim2.fromOffset(12,0)
+    BootLabel.Size=UDim2.new(1,-24,1,0)
+    BootLabel.Font=Enum.Font.Code
+    BootLabel.TextSize=16
+    BootLabel.TextColor3=Color3.fromRGB(230,235,230)
+    BootLabel.TextXAlignment=Enum.TextXAlignment.Left
+    BootLabel.Text="OneClick GAG2 | source entered"
+    BootLabel.Parent=frame
+    return true
+end
+
+pcall(makeBootGui)
+
+local function setBoot(text)
+    if not (BootGui and BootGui.Parent) then pcall(makeBootGui) end
+    if BootLabel and BootLabel.Parent then
+        BootLabel.Text="OneClick GAG2 | "..tostring(text)
+    end
+    print("[OneClick GAG2 BOOT] "..tostring(text))
+end
+
+setBoot("checking config")
+if type(Config)~="table" then
+    setBoot("CONFIG MISSING")
+    warn("[OneClick GAG2] getgenv().Config must be defined above loader.")
     return
 end
 
-setBoot("config OK")
+setBoot("waiting LocalPlayer")
+local LP
+do
+    local deadline=os.clock()+20
+    repeat
+        LP=Players.LocalPlayer
+        if LP then break end
+        task.wait(0.05)
+    until os.clock()>=deadline
+end
 
-task.delay(15,function()
+if not LP then
+    setBoot("ERROR: LocalPlayer unavailable after 20s")
+    warn("[OneClick GAG2] LocalPlayer unavailable.")
+    return
+end
+
+-- If CoreGui was blocked, retry through PlayerGui after LocalPlayer exists.
+if not (BootGui and BootGui.Parent) then
+    local pg=LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui",10)
+    if pg then pcall(makeBootGui) end
+end
+
+setBoot("LocalPlayer OK")
+
+task.delay(20,function()
     if BootGui and BootGui.Parent and BootGui.Enabled and BootLabel then
-        BootLabel.Text = BootLabel.Text .. " | still loading - check F9"
+        BootLabel.Text=BootLabel.Text.." | still initializing; check F9"
     end
 end)
 
@@ -126,7 +155,8 @@ end
 local Controller = {}
 ENV.__ONECLICK_GAG2_REBUILD = Controller
 local Alive = true
-local BUILD = "V4.1-BOOTSAFE-2026-08-19-R1"
+local EngineReady = false
+local BUILD = "V5-FINAL-2026-08-19-R2"
 ENV.__ONECLICK_GAG2_BUILD = BUILD
 
 --==============================================================
@@ -229,7 +259,7 @@ local State = {
     PacketMethods = {},
     Earned = 0,
     Unsupported = {
-        MAIL_SEND = true,
+        MAIL_SEND = false,
         AUCTION = true,
         ECLIPSE_MERGE = true,
     },
@@ -268,45 +298,85 @@ end
 -- NETWORKING: STRICT RUNTIME CAPABILITY RESOLUTION
 --==============================================================
 local Networking
-do
-    setBoot("finding Networking")
-    local mod
-    local deadline = os.clock() + 8
+local NetworkingModule
 
+local function locateNetworkingModule(timeoutSec)
+    local deadline=os.clock()+(timeoutSec or 0)
     repeat
-        local shared = RS:FindFirstChild("SharedModules")
+        local shared=RS:FindFirstChild("SharedModules")
         if shared then
-            mod = shared:FindFirstChild("Networking")
+            local m=shared:FindFirstChild("Networking")
+            if m and m:IsA("ModuleScript") then return m end
         end
 
-        if not mod then
-            for _, d in ipairs(RS:GetDescendants()) do
-                if d:IsA("ModuleScript") and d.Name == "Networking" then
-                    mod = d
-                    break
-                end
+        for _,d in ipairs(RS:GetDescendants()) do
+            if d:IsA("ModuleScript") and d.Name=="Networking" then
+                return d
             end
         end
 
-        if mod then break end
-        task.wait(0.2)
-    until os.clock() >= deadline
+        if os.clock()>=deadline then break end
+        task.wait(0.15)
+    until false
+    return nil
+end
 
-    if mod then
-        setBoot("loading Networking")
-        local ok, res = pcall(require, mod)
-        if ok and type(res) == "table" then
-            Networking = res
-            State.NetworkReady = true
-            setBoot("Networking READY")
-        else
-            errlog("require Networking", res)
-            setBoot("Networking require FAILED")
-        end
-    else
-        errlog("Networking", "ModuleScript not found")
-        setBoot("Networking MISSING - opening UI anyway")
+local NetworkingLoadSerial=0
+
+local function loadNetworking(timeoutSec)
+    setBoot("finding Networking")
+    local mod=locateNetworkingModule(timeoutSec or 0)
+    if not mod then
+        State.NetworkReady=false
+        return false,"Networking ModuleScript not found"
     end
+
+    if NetworkingModule==mod and type(Networking)=="table" then
+        State.NetworkReady=true
+        return true
+    end
+
+    setBoot("loading Networking")
+    NetworkingLoadSerial+=1
+    local serial=NetworkingLoadSerial
+    local done=false
+    local okRequire=false
+    local result
+
+    task.spawn(function()
+        local ok,res=pcall(require,mod)
+        if serial~=NetworkingLoadSerial then return end
+        okRequire=ok
+        result=res
+        if ok and type(res)=="table" then
+            NetworkingModule=mod
+            Networking=res
+            State.NetworkReady=true
+        end
+        done=true
+    end)
+
+    local deadline=os.clock()+math.max(0.5,timeoutSec or 2.5)
+    while not done and os.clock()<deadline do task.wait(0.05) end
+
+    if not done then
+        State.NetworkReady=false
+        return false,"Networking require timed out; retry continues later"
+    end
+
+    if not okRequire or type(result)~="table" then
+        State.NetworkReady=false
+        return false,result
+    end
+
+    setBoot("Networking READY")
+    return true
+end
+
+local okNet,netErr=loadNetworking(2.5)
+if not okNet then
+    errlog("Networking",netErr)
+    setBoot("Networking late/missing; continuing")
 end
 
 local function getPath(root, path)
@@ -439,93 +509,88 @@ local function adaptiveFire(capName, pkt, variants, verify, verifyTimeout)
     return false
 end
 
--- Verified from public open-source GAG2 harvest.
-local P_CollectFruit = resolve("HARVEST", {
-    "Garden.CollectFruit",
-})
+-- Re-bindable packet handles.
+local P_CollectFruit
+local P_PlantSeed
+local P_PreviewSellAll
+local P_SellAll
+local P_PurchaseSeed
+local P_PurchaseGear
+local P_PurchaseCrate
+local P_WildPetTame
+local P_GetEquippedPets
+local P_GetPets
+local P_EquipPet
+local P_UnequipPet
+local P_SellPet
+local P_BuyPetSlot
+local P_ClaimMailbox
+local P_ClaimGifts
+local P_RedeemCode
+local P_StealBegin
+local P_StealComplete
+local P_ShoveSwing
+local P_ShoveHit
 
--- Runtime-resolved exact names used by current public GAG2 automation.
-local P_PlantSeed = resolve("PLANT", {
-    "Plant.PlantSeed",
-    "Garden.PlantSeed",
-})
-local P_PreviewSellAll = resolve("SELL_PREVIEW", {
-    "NPCS.PreviewSellAll",
-    "NPCs.PreviewSellAll",
-    "Sell.PreviewSellAll",
-}, true)
-local P_SellAll = resolve("SELL", {
-    "NPCS.SellAll",
-    "NPCs.SellAll",
-    "Sell.SellAll",
-})
-local P_PurchaseSeed = resolve("BUY_SEED", {
-    "SeedShop.PurchaseSeed",
-    "Shop.PurchaseSeed",
-})
-local P_PurchaseGear = resolve("BUY_GEAR", {
-    "GearShop.PurchaseGear",
-    "Shop.PurchaseGear",
-})
-local P_PurchaseCrate = resolve("BUY_CRATE", {
-    "CrateShop.PurchaseCrate",
-    "PropShop.PurchaseCrate",
-    "PropsShop.PurchaseCrate",
-})
-local P_WildPetTame = resolve("TAME_PET", {
-    "Pets.WildPetTame",
-    "Pets.TameWildPet",
-})
-local P_GetEquippedPets = resolve("GET_EQUIPPED_PETS", {
-    "Pets.GetEquippedPets",
-}, true)
-local P_GetPets = resolve("GET_PETS", {
-    "Pets.GetPets",
-    "Pets.GetOwnedPets",
-    "Pets.GetInventoryPets",
-}, true)
-local P_EquipPet = resolve("EQUIP_PET", {
-    "Pets.EquipPet",
-    "Pets.Equip",
-})
-local P_UnequipPet = resolve("UNEQUIP_PET", {
-    "Pets.UnequipPet",
-    "Pets.Unequip",
-})
-local P_SellPet = resolve("SELL_PET", {
-    "Pets.SellPet",
-    "Pets.Sell",
-})
-local P_BuyPetSlot = resolve("BUY_PET_SLOT", {
-    "Pets.BuyPetSlot",
-    "Pets.PurchasePetSlot",
-    "PetShop.BuyPetSlot",
-})
-local P_ClaimMailbox = resolve("MAILBOX", {
-    "Mailbox.ClaimAll",
-    "Mail.ClaimAll",
-    "Mailbox.ClaimAllMail",
-})
-local P_ClaimGifts = resolve("GIFTS", {
-    "Gifts.ClaimAll",
-    "Mailbox.ClaimAllGifts",
-})
-local P_RedeemCode = resolve("CODES", {
-    "Codes.RedeemCode",
-    "Code.RedeemCode",
-})
-local P_StealBegin = resolve("STEAL_BEGIN", {
-    "Steal.BeginSteal",
-})
-local P_StealComplete = resolve("STEAL_COMPLETE", {
-    "Steal.CompleteSteal",
-})
-local P_ShoveSwing = resolve("SHOVEL_SWING", {
-    "Shovel.SwingShovel",
-})
-local P_ShoveHit = resolve("SHOVEL_HIT", {
-    "Shovel.HitPlayer",
-})
+local function bindPackets()
+    if type(Networking)~="table" then return false end
+
+    P_CollectFruit=resolve("HARVEST",{"Garden.CollectFruit"})
+    P_PlantSeed=resolve("PLANT",{"Plant.PlantSeed","Garden.PlantSeed"})
+    P_PreviewSellAll=resolve("SELL_PREVIEW",{
+        "NPCS.PreviewSellAll","NPCs.PreviewSellAll","Sell.PreviewSellAll",
+    },true)
+    P_SellAll=resolve("SELL",{"NPCS.SellAll","NPCs.SellAll","Sell.SellAll"})
+    P_PurchaseSeed=resolve("BUY_SEED",{"SeedShop.PurchaseSeed","Shop.PurchaseSeed"})
+    P_PurchaseGear=resolve("BUY_GEAR",{"GearShop.PurchaseGear","Shop.PurchaseGear"})
+    P_PurchaseCrate=resolve("BUY_CRATE",{
+        "CrateShop.PurchaseCrate","PropShop.PurchaseCrate","PropsShop.PurchaseCrate",
+    })
+    P_WildPetTame=resolve("TAME_PET",{"Pets.WildPetTame","Pets.TameWildPet"})
+    P_GetEquippedPets=resolve("GET_EQUIPPED_PETS",{"Pets.GetEquippedPets"},true)
+    P_GetPets=resolve("GET_PETS",{
+        "Pets.GetPets","Pets.GetOwnedPets","Pets.GetInventoryPets",
+    },true)
+    P_EquipPet=resolve("EQUIP_PET",{"Pets.EquipPet","Pets.Equip"})
+    P_UnequipPet=resolve("UNEQUIP_PET",{"Pets.UnequipPet","Pets.Unequip"})
+    P_SellPet=resolve("SELL_PET",{"Pets.SellPet","Pets.Sell"})
+    P_BuyPetSlot=resolve("BUY_PET_SLOT",{
+        "Pets.BuyPetSlot","Pets.PurchasePetSlot","PetShop.BuyPetSlot",
+    })
+    P_ClaimMailbox=resolve("MAILBOX",{
+        "Mailbox.ClaimAll","Mail.ClaimAll","Mailbox.ClaimAllMail",
+    })
+    P_ClaimGifts=resolve("GIFTS",{"Gifts.ClaimAll","Mailbox.ClaimAllGifts"})
+    P_RedeemCode=resolve("CODES",{"Codes.RedeemCode","Code.RedeemCode"})
+    P_StealBegin=resolve("STEAL_BEGIN",{"Steal.BeginSteal"})
+    P_StealComplete=resolve("STEAL_COMPLETE",{"Steal.CompleteSteal"})
+    P_ShoveSwing=resolve("SHOVEL_SWING",{"Shovel.SwingShovel"})
+    P_ShoveHit=resolve("SHOVEL_HIT",{"Shovel.HitPlayer"})
+    return true
+end
+
+pcall(bindPackets)
+
+task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
+    while Alive do
+        local needNetwork=type(Networking)~="table" or not State.NetworkReady
+        local needCore=not P_CollectFruit or not P_PlantSeed or not P_SellAll
+
+        if needNetwork then
+            local ok,e=loadNetworking(0.5)
+            if not ok then
+                State.NetworkReady=false
+                State.LastError="Networking retry: "..tostring(e)
+            end
+        end
+
+        if type(Networking)=="table" and (needNetwork or needCore) then
+            pcall(bindPackets)
+        end
+        task.wait(3)
+    end
+end)
 
 -- Optional debug dump: this does not fire anything.
 local function dumpPacketPaths()
@@ -1051,6 +1116,7 @@ end)
 
 -- Capacity monitor catches full state even if the notification UI was suppressed.
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if sellConfigEnabled() then
             local count, cap = sellInventoryNumbers()
@@ -1416,6 +1482,7 @@ local function harvestOnce()
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         local ok,e = pcall(harvestOnce)
         if not ok then errlog("Harvest",e) end
@@ -1592,6 +1659,7 @@ local function plantOnce()
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         local ok,e=pcall(plantOnce)
         if not ok then errlog("Plant",e) end
@@ -1850,6 +1918,7 @@ local function npcSellFallback(before)
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if sellConfigEnabled() then
             local count=currentSellCountAndValue()
@@ -2075,6 +2144,7 @@ local function buyShop(section,itemKey,folders,pkt,counterKey)
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         local ok,e=pcall(buyShop,"Buy Seed","Seed",{"SeedShop","Seeds"},P_PurchaseSeed,"SeedsBought")
         if not ok then errlog("Buy Seed",e) end
@@ -2083,6 +2153,7 @@ task.spawn(function()
 end)
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         local ok,e=pcall(buyShop,"Buy Gear","Gear",{"GearShop","Gears"},P_PurchaseGear,"GearsBought")
         if not ok then errlog("Buy Gear",e) end
@@ -2091,6 +2162,7 @@ task.spawn(function()
 end)
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         local ok,e=pcall(buyShop,"Crate","Crate",{"CrateShop","PropShop","PropsShop","Props"},P_PurchaseCrate,"CratesBought")
         if not ok then errlog("Buy Crate",e) end
@@ -2150,6 +2222,7 @@ local function toolAllowedByConfig(t)
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         for _,t in ipairs(scanTools()) do
             if toolAllowedByConfig(t) then
@@ -2175,30 +2248,77 @@ local function getPlotCenter()
     return ok and cf.Position or nil
 end
 
-local function useGearLoop(section, keywords)
+local function plantWaterFingerprint()
+    local plot=getPlot()
+    if not plot then return "" end
+    local parts={}
+    local seen=0
+    for _,d in ipairs(plot:GetDescendants()) do
+        if seen>=100 then break end
+        if d:IsA("Model") or d:IsA("BasePart") then
+            for _,k in ipairs({"Water","Watered","Hydration","Moisture","Wet","Growth","GrowthPercent"}) do
+                local v=d:GetAttribute(k)
+                if v~=nil then
+                    parts[#parts+1]=tostring(d)..":"..k.."="..tostring(v)
+                    seen+=1
+                end
+            end
+        end
+    end
+    table.sort(parts)
+    return table.concat(parts,"|")
+end
+
+local function useGearLoop(section,keywords)
     task.spawn(function()
         while Alive do
-            if enabled(section,"Enable") then
+            local okLoop,eLoop=pcall(function()
+                if not enabled(section,"Enable") then return end
                 local list=C(section,"Gear")
+
                 for _,t in ipairs(scanTools()) do
                     local n=toolName(t)
-                    local lower=norm(n)
-                    local isType=false
-                    for _,k in ipairs(keywords) do if lower:find(norm(k),1,true) then isType=true break end end
-                    if isType and (type(list)~="table" or next(list)==nil or tableAllows(list,n,false)) then
+                    local ln=norm(n)
+                    local rightType=false
+                    for _,k in ipairs(keywords) do
+                        if ln:find(norm(k),1,true) then rightType=true break end
+                    end
+
+                    if rightType and (type(list)~="table" or next(list)==nil or tableAllows(list,n,false)) then
                         if acquire(section,1) then
                             local root=hrp()
                             local saved=root and root.CFrame
                             local center=getPlotCenter()
                             if root and center then root.CFrame=CFrame.new(center+Vector3.new(0,3,0)) end
-                            if equipActivate(t) then log(section.." activated: "..n) end
-                            if root and saved then root.CFrame=saved end
+
+                            local beforeCount=countTool(n)
+                            local beforeWater=plantWaterFingerprint()
+                            local activated=equipActivate(t)
+                            task.wait(math.max(0.2,tonumber(C(section,"Verify Delay")) or 0.45))
+                            local afterCount=countTool(n)
+                            local afterWater=plantWaterFingerprint()
+
+                            local verified=activated and (
+                                afterCount<beforeCount
+                                or (beforeWater~="" and afterWater~=beforeWater)
+                            )
+
+                            if verified then
+                                State.Verified[norm(section):upper()]=true
+                                log(section.." verified: "..n)
+                            elseif activated and enabled("Debug","Console") then
+                                print("[OneClick GAG2] "..section.." activated but effect not verified: "..n)
+                            end
+
+                            root=hrp()
+                            if root and saved then pcall(function() root.CFrame=saved end) end
                             release(section)
                             task.wait(math.max(0.5,num(3,section,"Interval")))
                         end
                     end
                 end
-            end
+            end)
+            if not okLoop then errlog(section,eLoop) end
             task.wait(1)
         end
     end)
@@ -2208,6 +2328,7 @@ useGearLoop("Auto Water", {"WateringCan"})
 useGearLoop("Auto Sprinkler", {"Sprinkler"})
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Event","Cornucopia","Auto Use") then
             local t=findTool("Cornucopia")
@@ -2295,6 +2416,7 @@ local function refCF(ref)
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Pet","Auto Buy","Enable") and P_WildPetTame then
             local ref=bestWildPet()
@@ -2479,6 +2601,7 @@ local function managePets()
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         local ok,e=pcall(managePets)
         if not ok then errlog("Pet Equip",e) end
@@ -2499,6 +2622,7 @@ local function countPetSpecies(pets)
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Pet","Auto Sell","Enable") and P_GetPets and P_SellPet then
             local ok,e=pcall(function()
@@ -2555,6 +2679,7 @@ local function petSlotCount()
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Buy Slot Pet") and P_BuyPetSlot then
             local max=num(6,"Pet","Max Slots")
@@ -2626,6 +2751,7 @@ local function usePrompt(p)
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Buy Expand Plot") then
             local limit=num(math.huge,"Expand Limit")
@@ -2727,6 +2853,7 @@ local function touchOrPrompt(inst)
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Event","Collect Seed","Enable") or enabled("Seed Pack","Collect") then
             local candidates={}
@@ -2781,6 +2908,221 @@ task.spawn(function()
         task.wait(2.5)
     end
 end)
+
+--==============================================================
+-- MAIL SEND UI DRIVER
+--==============================================================
+local MailRuntime={LastSend=0,Status="WAITING",Sent=0}
+
+local function subtreeText(root)
+    if not root then return "" end
+    local parts={root.Name}
+    if root:IsA("TextLabel") or root:IsA("TextButton") or root:IsA("TextBox") then
+        parts[#parts+1]=tostring(root.Text or "")
+        if root:IsA("TextBox") then parts[#parts+1]=tostring(root.PlaceholderText or "") end
+    end
+    for _,d in ipairs(root:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+            parts[#parts+1]=tostring(d.Text or "")
+            if d:IsA("TextBox") then parts[#parts+1]=tostring(d.PlaceholderText or "") end
+        end
+    end
+    return table.concat(parts," ")
+end
+
+local function findMailboxPrompt()
+    local best,bestScore=nil,-1
+    for _,d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Enabled then
+            local txt=norm((d.ActionText or "").." "..(d.ObjectText or "").." "..d.Name.." "..(d.Parent and d.Parent.Name or ""))
+            local score=0
+            if txt:find("mailbox",1,true) then score+=100 end
+            if txt:find("mail",1,true) then score+=50 end
+            if txt:find("send",1,true) then score+=20 end
+            if score>bestScore then best,bestScore=d,score end
+        end
+    end
+    return bestScore>=50 and best or nil
+end
+
+local function findMailboxGui()
+    local pg=LP:FindFirstChildOfClass("PlayerGui")
+    if not pg then return nil end
+    local best,bestScore=nil,-1
+    for _,g in ipairs(pg:GetDescendants()) do
+        if (g:IsA("Frame") or g:IsA("ScrollingFrame")) and g.Visible then
+            local txt=norm(g.Name.." "..subtreeText(g))
+            local score=0
+            if txt:find("mailbox",1,true) then score+=100 end
+            if txt:find("mailsend",1,true) then score+=80 end
+            if txt:find("sendto",1,true) then score+=60 end
+            if txt:find("yourmailbox",1,true) then score+=50 end
+            if score>bestScore then best,bestScore=g,score end
+        end
+    end
+    return bestScore>=50 and best or nil
+end
+
+local function openMailboxGui()
+    local gui=findMailboxGui()
+    if gui then return gui end
+    local prompt=findMailboxPrompt()
+    if prompt then
+        pcall(usePrompt,prompt)
+        task.wait(0.35)
+        return findMailboxGui()
+    end
+end
+
+local function findTextBoxByWords(root,words)
+    if not root then return nil end
+    for _,d in ipairs(root:GetDescendants()) do
+        if d:IsA("TextBox") and d.Visible then
+            local txt=norm(d.Name.." "..tostring(d.PlaceholderText or "").." "..tostring(d.Text or ""))
+            for _,w in ipairs(words) do
+                if txt:find(norm(w),1,true) then return d end
+            end
+        end
+    end
+end
+
+local function findButtonByWords(root,words,avoid)
+    if not root then return nil end
+    local best,bestScore=nil,-1
+    for _,d in ipairs(root:GetDescendants()) do
+        if (d:IsA("TextButton") or d:IsA("ImageButton")) and d.Visible then
+            local txt=norm(d.Name.." "..subtreeText(d))
+            local blocked=false
+            for _,w in ipairs(avoid or {}) do
+                if txt:find(norm(w),1,true) then blocked=true break end
+            end
+            if not blocked then
+                local score=0
+                for _,w in ipairs(words or {}) do
+                    if txt:find(norm(w),1,true) then score+=20 end
+                end
+                if score>bestScore and score>0 then best,bestScore=d,score end
+            end
+        end
+    end
+    return best
+end
+
+local function clickMailButton(obj)
+    if not obj or not obj.Parent or not obj.Visible then return false end
+    if firesignal then
+        local ok=pcall(function() firesignal(obj.Activated) end)
+        if ok then return true end
+    end
+    local pos,size=obj.AbsolutePosition,obj.AbsoluteSize
+    if size.X<=0 or size.Y<=0 then return false end
+    local x=math.floor(pos.X+size.X/2)
+    local y=math.floor(pos.Y+size.Y/2)
+    return pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(x,y,0,true,game,0)
+        task.wait(0.04)
+        VirtualInputManager:SendMouseButtonEvent(x,y,0,false,game,0)
+    end)
+end
+
+local function configuredMailItems()
+    local out={}
+    local m=C("Mail")
+    if type(m)~="table" then return out end
+    for _,section in ipairs({"Seed","Gear","Pet","Item"}) do
+        local t=m[section]
+        if type(t)=="table" then
+            for name,v in pairs(t) do
+                if v==true or (type(v)=="number" and v>0) or v=="All" then
+                    out[#out+1]={Name=name,Amount=v,Section=section}
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function sendOneMailItem(item)
+    local username=tostring(C("Mail","Username") or "")
+    if username=="" then MailRuntime.Status="NO USERNAME" return false end
+
+    local before=countTool(item.Name)
+    local gui=openMailboxGui()
+    if not gui then MailRuntime.Status="MAIL UI NOT FOUND" return false end
+
+    local userBox=findTextBoxByWords(gui,{"username","user","recipient","sendto","player","search"})
+    if userBox then
+        pcall(function()
+            userBox.Text=username
+            userBox:CaptureFocus()
+            userBox.CursorPosition=#username+1
+        end)
+        task.wait(0.1)
+        pcall(function() userBox:ReleaseFocus(true) end)
+        task.wait(0.2)
+    end
+
+    local note=tostring(C("Mail","Note") or "")
+    if note~="" then
+        local noteBox=findTextBoxByWords(gui,{"note","message"})
+        if noteBox then pcall(function() noteBox.Text=note end) end
+    end
+
+    local itemButton=findButtonByWords(gui,{item.Name},{"send","cancel","claim"})
+    if not itemButton then
+        MailRuntime.Status="ITEM UI NOT FOUND: "..item.Name
+        return false
+    end
+
+    clickMailButton(itemButton)
+    task.wait(0.18)
+
+    local sendButton=findButtonByWords(gui,{"send"},{"cancel","claim"})
+    if not sendButton then MailRuntime.Status="SEND BUTTON NOT FOUND" return false end
+    clickMailButton(sendButton)
+
+    local verified=waitUntil(function()
+        if item.Section=="Pet" then
+            local txt=norm(subtreeText(gui))
+            return txt:find("sent",1,true)~=nil or txt:find("success",1,true)~=nil
+        end
+        return countTool(item.Name)<before
+    end,2.0,0.08)
+
+    if verified then
+        MailRuntime.Sent+=1
+        MailRuntime.Status="SENT "..item.Name
+        State.Verified.MAIL_SEND=true
+        log("Mail sent verified: "..item.Name.." -> "..username)
+        return true
+    end
+
+    MailRuntime.Status="SEND NOT VERIFIED"
+    return false
+end
+
+task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
+    while Alive do
+        local ok,e=pcall(function()
+            if enabled("Mail","Enable") then
+                local interval=math.max(5,tonumber(C("Mail","IntervalSec")) or 30)
+                if os.clock()-MailRuntime.LastSend>=interval then
+                    MailRuntime.LastSend=os.clock()
+                    for _,item in ipairs(configuredMailItems()) do
+                        if sendOneMailItem(item) then break end
+                    end
+                end
+            end
+        end)
+        if not ok then
+            MailRuntime.Status="ERROR"
+            errlog("Mail Send",e)
+        end
+        task.wait(1)
+    end
+end)
+
 
 --==============================================================
 -- MAILBOX / GIFTS / CODES
@@ -2848,6 +3190,7 @@ local function mailboxCount()
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Mailbox","Auto Claim") then
             local b=visibleButtonContains({"claim","all"},"mail")
@@ -2898,6 +3241,7 @@ end)
 
 local redeemed={}
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Codes","Enable") and P_RedeemCode then
             local list=C("Codes","Code")
@@ -3066,6 +3410,7 @@ task.spawn(function()
 end)
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Event","Garden Cards","Free Daily") then
             local b=visibleButtonContains({"free"},"card") or visibleButtonContains({"free"},"garden")
@@ -3096,6 +3441,7 @@ end)
 
 -- World travel: interacts with actual Ethan/world UI only.
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         local worldCfg=C("World")
         if type(worldCfg)=="table" and worldCfg["Auto Travel"]==true then
@@ -3137,6 +3483,7 @@ end)
 -- NIGHT STEAL - NORMAL GAME INTERACTION (NOT INSTANT-STEAL BYPASS)
 --==============================================================
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Steal","Enable") and isNight() then
             local maxCount=num(10,"Steal","Limit")
@@ -3210,6 +3557,7 @@ local function intrudersInMyGarden()
 end
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("Anti Steal","Enable") and isNight() and P_ShoveSwing and P_ShoveHit then
             local shovel=findShovel()
@@ -3334,6 +3682,109 @@ task.spawn(function()
 end)
 
 --==============================================================
+-- FPS BOOST / SAFE CLIENT CULL
+--==============================================================
+local FPSBoostState={Applied=false,Connections={}}
+
+local function isPlantVisual(inst)
+    local cur=inst
+    for _=1,7 do
+        if not cur then break end
+        local n=norm(cur.Name)
+        if n=="plants" or n:find("plant",1,true) or cur:GetAttribute("PlantId")~=nil then
+            return true
+        end
+        cur=cur.Parent
+    end
+    return false
+end
+
+local function isMapVisual(inst)
+    local cur=inst
+    for _=1,6 do
+        if not cur then break end
+        local n=norm(cur.Name)
+        if n=="map" or n:find("tree",1,true) or n:find("foliage",1,true)
+            or n:find("decor",1,true) or n:find("bush",1,true)
+            or n:find("grass",1,true) or n:find("leaf",1,true)
+            or n:find("leaves",1,true) then
+            return true
+        end
+        cur=cur.Parent
+    end
+    return false
+end
+
+local function optimizeVisual(d)
+    if Config["FPS Boost"]~=true then return end
+    local hidePlants=C("FPS Boost Settings","Hide Plants")~=false
+    local hideMap=C("FPS Boost Settings","Hide Map Visuals")~=false
+
+    if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam")
+        or d:IsA("Smoke") or d:IsA("Fire") or d:IsA("Sparkles") then
+        pcall(function() d.Enabled=false end)
+        return
+    end
+
+    if d:IsA("PointLight") or d:IsA("SpotLight") or d:IsA("SurfaceLight") then
+        pcall(function() d.Enabled=false end)
+        return
+    end
+
+    if d:IsA("Decal") or d:IsA("Texture") then
+        if hideMap or (hidePlants and isPlantVisual(d)) then
+            pcall(function() d.Transparency=1 end)
+        end
+        return
+    end
+
+    if d:IsA("BasePart") then
+        pcall(function()
+            d.CastShadow=false
+            d.Reflectance=0
+        end)
+
+        -- Do NOT Destroy parts: harvest/prompts depend on these instances.
+        -- LocalTransparencyModifier removes rendering while CanCollide stays intact.
+        if (hidePlants and isPlantVisual(d)) or (hideMap and isMapVisual(d)) then
+            pcall(function() d.LocalTransparencyModifier=1 end)
+        end
+    end
+end
+
+local function applyFPSBoost()
+    if Config["FPS Boost"]~=true or FPSBoostState.Applied then return end
+    FPSBoostState.Applied=true
+
+    pcall(function()
+        Lighting.GlobalShadows=false
+        Lighting.FogEnd=1e9
+    end)
+    pcall(function()
+        workspace.Terrain.Decoration=false
+        workspace.Terrain.WaterWaveSize=0
+        workspace.Terrain.WaterWaveSpeed=0
+        workspace.Terrain.WaterReflectance=0
+        workspace.Terrain.WaterTransparency=1
+    end)
+
+    for _,d in ipairs(workspace:GetDescendants()) do optimizeVisual(d) end
+    FPSBoostState.Connections[#FPSBoostState.Connections+1]=workspace.DescendantAdded:Connect(function(d)
+        task.defer(optimizeVisual,d)
+    end)
+
+    log("FPS Boost active: visuals culled, collision preserved")
+end
+
+task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
+    task.wait(0.5)
+    local ok,e=pcall(applyFPSBoost)
+    if not ok then errlog("FPS Boost",e) end
+end)
+
+
+--==============================================================
 -- PERFORMANCE / ANTI-AFK / REJOIN / RAM
 --==============================================================
 if setfpscap then
@@ -3355,6 +3806,7 @@ LP.Idled:Connect(function()
 end)
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         local limit=num(0,"General","RAM Kick MB")
         if limit>0 then
@@ -3373,6 +3825,7 @@ task.spawn(function()
 end)
 
 task.spawn(function()
+    while Alive and not EngineReady do task.wait(0.1) end
     while Alive do
         if enabled("General","Auto Rejoin") then
             pcall(function()
@@ -3397,6 +3850,9 @@ end)
 --==============================================================
 local GUI
 if C("UI","Enable")~=false then
+    setBoot("building main UI")
+    local okUI,uiErr=xpcall(function()
+
     setBoot("building main UI")
 
     local parent
@@ -3587,8 +4043,9 @@ if C("UI","Enable")~=false then
     addLine("PetCap","Pet: checking...",false)
     addLine("PetSlotCap","Pet Slot: checking...",false)
     addLine("AntiStealCap","Anti Steal: checking...",false)
+    addLine("FPSCap","FPS Boost: checking...",false)
     addLine("MailCap","Mailbox: checking...",false)
-    addLine("ExtraCap","Mail Send: UNSUPPORTED | Auction: UNSUPPORTED",false)
+    addLine("ExtraCap","Mail Send: WAITING | Auction: UNSUPPORTED",false)
     addLine("EclipseCap","Eclipse Merge: UNSUPPORTED",false)
 
     addLine("Status","───STATUS───",true)
@@ -3779,16 +4236,33 @@ if C("UI","Enable")~=false then
             Labels.PetSlotCap.Text="Pet Slot: "..runtimeStatus("BUY_PET_SLOT")
             local antiStealReady=State.Capabilities["SHOVEL_SWING"] and State.Capabilities["SHOVEL_HIT"]
             Labels.AntiStealCap.Text="Anti Steal: "..(antiStealReady and "FOUND" or "MISSING")
+            Labels.FPSCap.Text="FPS Boost: "..(Config["FPS Boost"]==true and (FPSBoostState.Applied and "ACTIVE" or "WAIT") or "OFF")
             Labels.MailCap.Text="Mailbox: "..runtimeStatus("MAILBOX")
+            Labels.ExtraCap.Text="Mail Send: "..tostring(MailRuntime.Status)
+                .." | Sent "..tostring(MailRuntime.Sent)
+                .." | Auction: UNSUPPORTED"
 
             Labels.Last.Text="Last: "..tostring(State.LastAction)
             Labels.Error.Text="Error: "..(State.LastError~="" and State.LastError or "none")
             task.wait(.5)
         end
     end)
+    end,function(e)
+        return tostring(e)
+    end)
+
+    if not okUI then
+        State.LastError="UI: "..tostring(uiErr)
+        setBoot("UI ERROR: "..tostring(uiErr))
+        warn("[OneClick GAG2] UI ERROR: "..tostring(uiErr))
+    else
+        setBoot("main UI READY")
+    end
 end
 
-if BootGui and BootGui.Parent then
+EngineReady=true
+
+if BootGui and BootGui.Parent and not (State.LastError and tostring(State.LastError):find("UI:",1,true)) then
     BootGui.Enabled=false
 end
 
@@ -3830,11 +4304,16 @@ end)
 
 Controller.Stop=function()
     Alive=false
+    EngineReady=true
     MoveLock.owner=nil
     for _,conn in ipairs(FullTextConnections) do
         pcall(function() conn:Disconnect() end)
     end
     table.clear(FullTextConnections)
+    for _,conn in ipairs(FPSBoostState.Connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    table.clear(FPSBoostState.Connections)
     pcall(function() RunService:Set3dRenderingEnabled(true) end)
     if GUI then pcall(function() GUI:Destroy() end) end
 end
