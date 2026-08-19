@@ -50,7 +50,7 @@ end
 local Controller = {}
 ENV.__ONECLICK_GAG2_REBUILD = Controller
 local Alive = true
-local BUILD = "V3-AUDITED-2026-08-19-R1"
+local BUILD = "V4-SELLGUARD-2026-08-19-R1"
 ENV.__ONECLICK_GAG2_BUILD = BUILD
 
 --==============================================================
@@ -165,6 +165,10 @@ local State = {
     BootstrapStatus = "CHECKING",
     LastSell = 0,
     LastWebhook = 0,
+    SellUrgent = false,
+    SellReason = "",
+    SellFailures = 0,
+    LastFullSignal = 0,
 }
 
 local function log(msg)
@@ -774,13 +778,198 @@ local function countFruitInventory()
     return n
 end
 
+local FruitCapacityCache = {At=0, Value=nil}
+
 local function getFruitCapacity()
-    for _, key in ipairs({"FruitCapacity","MaxFruit","FruitCap","BackpackCapacity"}) do
-        local a = LP:GetAttribute(key)
-        if type(a) == "number" then return a end
+    if os.clock() - FruitCapacityCache.At < 0.75 then
+        return FruitCapacityCache.Value
     end
-    return tonumber(Config["Max Plant Fruit"]) or 200
+    FruitCapacityCache.At = os.clock()
+
+    local best = nil
+    local function consider(v)
+        v = tonumber(v)
+        if v and v > 0 and v < 100000 then
+            if not best or v > best then best = v end
+        end
+    end
+
+    -- Attributes used by several GAG2 builds.
+    for _, key in ipairs({
+        "FruitCapacity","MaxFruit","FruitCap","BackpackCapacity",
+        "InventoryCapacity","MaxInventory","MaxBackpack"
+    }) do
+        consider(LP:GetAttribute(key))
+    end
+
+    -- Some builds keep capacity in Data/leaderstats values rather than attributes.
+    local function scanValues(root)
+        if not root then return end
+        for _, d in ipairs(root:GetDescendants()) do
+            if d:IsA("ValueBase") and tonumber(d.Value) then
+                local n = norm(d.Name)
+                if n == "fruitcapacity" or n == "maxfruit" or n == "fruitcap"
+                    or n == "backpackcapacity" or n == "inventorycapacity"
+                    or n == "maxinventory" or n == "maxbackpack" then
+                    consider(d.Value)
+                end
+            end
+        end
+    end
+    scanValues(LP:FindFirstChild("Data"))
+    scanValues(LP:FindFirstChild("leaderstats"))
+
+    -- Last reliable source: parse visible backpack/inventory counters like 83 / 100.
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    if pg then
+        for _, d in ipairs(pg:GetDescendants()) do
+            if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Visible then
+                local text = tostring(d.Text or "")
+                local current, cap = text:match("(%d+)%s*/%s*(%d+)")
+                if current and cap then
+                    local context = norm(d.Name .. " " .. text)
+                    local cur = d.Parent
+                    for _ = 1, 5 do
+                        if not cur then break end
+                        context ..= norm(cur.Name)
+                        cur = cur.Parent
+                    end
+                    if context:find("fruit",1,true)
+                        or context:find("backpack",1,true)
+                        or context:find("inventory",1,true)
+                        or context:find("bag",1,true) then
+                        consider(cap)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Explicit user fallback only. Do NOT reuse "Max Plant Fruit": that is garden size.
+    local fallback = tonumber(C("Auto Sell","Fallback Fruit Capacity"))
+    if not best and fallback and fallback > 0 then best = fallback end
+
+    FruitCapacityCache.Value = best
+    return best
 end
+
+local SellGuard = {
+    ForceUntil = 0,
+    Selling = false,
+    Reason = "",
+    LastSignal = 0,
+    LastFallback = 0,
+    RemoteFailStreak = 0,
+}
+
+local function sellConfigEnabled()
+    local sc = C("Auto Sell")
+    return type(sc) == "table" and sc["Enable"] == true
+end
+
+local function fullTextDetected(text)
+    if not sellConfigEnabled() or C("Auto Sell","Full Text Detect") == false then return false end
+    local n = norm(text)
+    if n == "" or not n:find("full",1,true) then return false end
+    return n:find("inventory",1,true)
+        or n:find("backpack",1,true)
+        or n:find("bag",1,true)
+        or n:find("storage",1,true)
+        or n:find("fruit",1,true)
+        or n:find("capacity",1,true)
+end
+
+local function signalInventoryFull(reason)
+    if not sellConfigEnabled() or C("Auto Sell","Sell On Full") == false then return end
+    local now = os.clock()
+    SellGuard.ForceUntil = math.max(SellGuard.ForceUntil, now + 15)
+    SellGuard.Reason = tostring(reason or "inventory full")
+    State.SellUrgent = true
+    State.SellReason = SellGuard.Reason
+    State.LastFullSignal = now
+
+    -- Avoid spamming console/UI while the game repeats its "full" notification.
+    if now - SellGuard.LastSignal > 1.5 then
+        SellGuard.LastSignal = now
+        log("Inventory full -> emergency sell")
+    end
+end
+
+local function clearSellGuard()
+    SellGuard.ForceUntil = 0
+    SellGuard.Selling = false
+    SellGuard.Reason = ""
+    SellGuard.RemoteFailStreak = 0
+    State.SellUrgent = false
+    State.SellReason = ""
+    State.SellFailures = 0
+end
+
+local function sellInventoryNumbers()
+    local preview = nil
+    -- sellPreview is declared later; this helper only uses locally detectable state.
+    local count = countFruitInventory()
+    local cap = getFruitCapacity()
+    return count, cap, preview
+end
+
+local function isSellUrgent()
+    if not sellConfigEnabled() then return false end
+    local now = os.clock()
+    if now < SellGuard.ForceUntil then return true end
+
+    local count, cap = sellInventoryNumbers()
+    if cap and cap > 0 then
+        local emergencyPct = tonumber(C("Auto Sell","Emergency Percent")) or 92
+        if count >= math.max(1, math.floor(cap * emergencyPct / 100)) then
+            signalInventoryFull("capacity " .. tostring(count) .. "/" .. tostring(cap))
+            return true
+        end
+    end
+    return false
+end
+
+local function pauseHarvestForSell()
+    if C("Auto Sell","Pause Harvest When Full") == false then return false end
+    return SellGuard.Selling or isSellUrgent()
+end
+
+-- Listen to the game's real "inventory/backpack full" notification.
+local FullTextConnections = {}
+local function watchFullTextObject(obj)
+    if not obj or not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then return end
+    local function check()
+        if fullTextDetected(obj.Text) then
+            signalInventoryFull("game full notification")
+        end
+    end
+    check()
+    FullTextConnections[#FullTextConnections+1] = obj:GetPropertyChangedSignal("Text"):Connect(check)
+end
+
+task.spawn(function()
+    local pg = LP:WaitForChild("PlayerGui", 15)
+    if not pg then return end
+    for _, d in ipairs(pg:GetDescendants()) do
+        watchFullTextObject(d)
+    end
+    FullTextConnections[#FullTextConnections+1] = pg.DescendantAdded:Connect(function(d)
+        watchFullTextObject(d)
+    end)
+end)
+
+-- Capacity monitor catches full state even if the notification UI was suppressed.
+task.spawn(function()
+    while Alive do
+        if sellConfigEnabled() then
+            local count, cap = sellInventoryNumbers()
+            if cap and count >= cap then
+                signalInventoryFull("backpack full " .. tostring(count) .. "/" .. tostring(cap))
+            end
+        end
+        task.wait(0.12)
+    end
+end)
 
 local PlantScanCache = {At = 0, List = {}, FullScanAt = 0}
 
@@ -1075,6 +1264,7 @@ end
 
 local function harvestOnce()
     if not enabled("Harvest","Enable") or not P_CollectFruit then return end
+    if pauseHarvestForSell() then return end
     local delay = math.max(0.02, num(0.08, "Harvest","Delay"))
     local plants = discoverOwnPlants(false)
     if #plants == 0 then
@@ -1082,13 +1272,14 @@ local function harvestOnce()
     end
 
     for _, plant in ipairs(plants) do
-        if not Alive or not enabled("Harvest","Enable") then break end
+        if not Alive or not enabled("Harvest","Enable") or pauseHarvestForSell() then break end
         if not plant.Parent then continue end
 
         local seed = plantSeedName(plant)
         local pid = plantId(plant)
         if seed and pid ~= nil then
             for _, target in ipairs(buildHarvestTargets(plant)) do
+                if pauseHarvestForSell() then break end
                 if not Alive or not target or not target.Parent then continue end
                 local key = harvestTargetKey(plant, target)
                 if HarvestDebounce[key] and os.clock() - HarvestDebounce[key] < 1.0 then continue end
@@ -1324,7 +1515,7 @@ local SellPreviewCache = {At = 0, Value = nil}
 
 local function sellPreview(force)
     if not P_PreviewSellAll then return nil end
-    if not force and os.clock() - SellPreviewCache.At < 0.5 then
+    if not force and os.clock() - SellPreviewCache.At < 0.35 then
         return SellPreviewCache.Value
     end
     SellPreviewCache.At = os.clock()
@@ -1351,59 +1542,300 @@ local function sellSnapshot()
     }
 end
 
-local function shouldSell()
-    local sc=C("Auto Sell")
-    if type(sc)~="table" or sc["Enable"]~=true then return false end
-    local mode=tostring(sc["Mode"] or "InventoryPercent")
+local function snapshotSold(before)
+    SellPreviewCache.At=0
+    FruitCapacityCache.At=0
+    local after=sellSnapshot()
+    if before.currency~="?" and after.currency==before.currency and after.cash>before.cash then return true,after end
+    if after.fruit < before.fruit then return true,after end
+    if before.previewCount and after.previewCount and after.previewCount < before.previewCount then return true,after end
+    return false,after
+end
+
+local function currentSellCountAndValue()
     local preview=sellPreview()
     local count=preview and tonumber(firstNonNil(preview.FruitCount,preview.Count,preview.ItemCount)) or countFruitInventory()
     local value=preview and tonumber(firstNonNil(preview.Value,preview.Sheckles,preview.Price,preview.TotalValue)) or nil
+    return count,value
+end
 
+local function shouldSell()
+    local sc=C("Auto Sell")
+    if type(sc)~="table" or sc["Enable"]~=true then return false end
+
+    if isSellUrgent() then return true end
+
+    local count,value=currentSellCountAndValue()
+    if count <= 0 then return false end
+
+    -- Independent safety threshold. This prevents ever reaching "full" when
+    -- the current game build does not expose a backpack-capacity value.
+    local safeCount=tonumber(sc["Safe Fruit Count"]) or 0
+    if safeCount>0 and count>=safeCount then
+        SellGuard.Reason="safe fruit count"
+        return true
+    end
+
+    local mode=tostring(sc["Mode"] or "InventoryPercent")
     if mode=="Timer" then
-        return os.clock()-State.LastSell >= (tonumber(sc["IntervalSec"]) or 60) and count > 0
+        return os.clock()-State.LastSell >= (tonumber(sc["IntervalSec"]) or 60)
     elseif mode=="Value" then
         return value and value >= (tonumber(sc["MinValue"]) or math.huge)
     else
-        local pct=tonumber(sc["InventoryPercent"]) or 80
-        local cap=math.max(1,getFruitCapacity())
-        return count>=math.max(1,math.floor(cap*pct/100))
+        local cap=getFruitCapacity()
+        if cap and cap>0 then
+            local pct=tonumber(sc["InventoryPercent"]) or 75
+            return count>=math.max(1,math.floor(cap*pct/100))
+        end
+
+        -- Unknown capacity: rely on Safe Fruit Count/full notification instead
+        -- of incorrectly treating garden Max Plant Fruit as backpack capacity.
+        return false
     end
+end
+
+local function sellVerifyFrom(before)
+    return function()
+        local ok = snapshotSold(before)
+        return ok
+    end
+end
+
+local function rawClickButton(btn)
+    if not btn or not btn.Parent or not btn.Visible then return false end
+    if firesignal then
+        local ok=pcall(function() firesignal(btn.Activated) end)
+        if ok then return true end
+    end
+    local pos,size=btn.AbsolutePosition,btn.AbsoluteSize
+    if size.X<=0 or size.Y<=0 then return false end
+    local x,y=math.floor(pos.X+size.X/2),math.floor(pos.Y+size.Y/2)
+    return pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(x,y,0,true,game,0)
+        task.wait(0.04)
+        VirtualInputManager:SendMouseButtonEvent(x,y,0,false,game,0)
+    end)
+end
+
+local function findSellAllButton()
+    local pg=LP:FindFirstChildOfClass("PlayerGui")
+    if not pg then return nil end
+    local best,bestScore=nil,-1
+    for _,d in ipairs(pg:GetDescendants()) do
+        if d:IsA("TextButton") and d.Visible then
+            local text=norm(d.Text.." "..d.Name)
+            local score=0
+            if text:find("sellall",1,true) then score+=100 end
+            if text=="sell" or text:find("sellfruit",1,true) then score+=50 end
+
+            local cur=d.Parent
+            for _=1,5 do
+                if not cur then break end
+                local n=norm(cur.Name)
+                if n:find("sell",1,true) then score+=20 end
+                if n:find("steven",1,true) then score+=30 end
+                cur=cur.Parent
+            end
+            if score>bestScore and score>=50 then
+                best,bestScore=d,score
+            end
+        end
+    end
+    return best
+end
+
+local function findSellPrompt()
+    local configured=C("Auto Sell","NPC Names")
+    local best,bestScore=nil,-1
+    for _,d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Enabled then
+            local text=norm((d.ActionText or "").." "..(d.ObjectText or "").." "..d.Name.." "..(d.Parent and d.Parent.Name or ""))
+            local score=0
+            if text:find("sellall",1,true) then score+=100 end
+            if text:find("sell",1,true) then score+=45 end
+            if text:find("steven",1,true) then score+=50 end
+
+            if type(configured)=="table" then
+                for _,name in ipairs(configured) do
+                    if type(name)=="string" and name~="" and text:find(norm(name),1,true) then
+                        score+=35
+                    end
+                end
+            end
+
+            if score>bestScore and score>=45 then
+                best,bestScore=d,score
+            end
+        end
+    end
+    return best
+end
+
+local function promptCF(prompt)
+    if not prompt or not prompt.Parent then return nil end
+    local p=prompt.Parent
+    if p:IsA("BasePart") then return p.CFrame end
+    if p:IsA("Model") then
+        local ok,cf=pcall(function() return p:GetPivot() end)
+        if ok then return cf end
+    end
+    local part=p:FindFirstChildWhichIsA("BasePart",true)
+    return part and part.CFrame or nil
+end
+
+local function rawUseSellPrompt(prompt)
+    if not prompt or not prompt.Parent then return false end
+    if fireproximityprompt then
+        local ok=pcall(fireproximityprompt,prompt)
+        if ok then return true end
+    end
+    return pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(math.max(0.05,tonumber(prompt.HoldDuration) or 0))
+        prompt:InputHoldEnd()
+    end)
+end
+
+local function npcSellFallback(before)
+    if C("Auto Sell","NPC Fallback")==false then return false end
+    local cooldown=math.max(0.5,tonumber(C("Auto Sell","Fallback Cooldown")) or 1.25)
+    if os.clock()-SellGuard.LastFallback<cooldown then return false end
+    SellGuard.LastFallback=os.clock()
+
+    if not acquire("EmergencySell",1.5) then return false end
+    local root=hrp()
+    local saved=root and root.CFrame
+    local verified=false
+
+    local function check()
+        local ok=snapshotSold(before)
+        return ok
+    end
+
+    -- Sometimes the sell dialogue is already open.
+    local button=findSellAllButton()
+    if button then
+        rawClickButton(button)
+        verified=waitUntil(check,1.0,0.05)
+    end
+
+    local prompt
+    if not verified then
+        prompt=findSellPrompt()
+        if prompt then
+            local cf=promptCF(prompt)
+            if cf then moveToCF(cf*CFrame.new(0,2.5,2),"EmergencySell") end
+            rawUseSellPrompt(prompt)
+            task.wait(0.18)
+
+            -- While physically at Steven/Sell NPC, retry the verified remote first.
+            if P_SellAll then
+                local variants={table.pack(),table.pack("All"),table.pack(true)}
+                verified=adaptiveFire("SELL",P_SellAll,variants,check,0.9)
+            end
+
+            -- If the NPC opened a dialogue, click its real Sell All button.
+            if not verified then
+                button=findSellAllButton()
+                if button then
+                    rawClickButton(button)
+                    verified=waitUntil(check,1.1,0.05)
+                end
+            end
+
+            -- Some sell prompts perform the sale directly.
+            if not verified then
+                verified=waitUntil(check,0.45,0.05)
+            end
+        end
+    end
+
+    root=hrp()
+    if root and saved then
+        pcall(function() root.CFrame=saved end)
+    end
+    release("EmergencySell")
+    return verified
 end
 
 task.spawn(function()
     while Alive do
-        if P_SellAll and shouldSell() then
-            local before=sellSnapshot()
-            local function verify()
-                SellPreviewCache.At=0
-                local after=sellSnapshot()
-                if before.currency~="?" and after.currency==before.currency and after.cash>before.cash then return true end
-                if after.fruit < before.fruit then return true end
-                if before.previewCount and after.previewCount and after.previewCount < before.previewCount then return true end
-                return false
+        if sellConfigEnabled() then
+            local count=currentSellCountAndValue()
+
+            -- If another system already cleared the bag, release emergency state.
+            if State.SellUrgent and count<=0 then
+                clearSellGuard()
             end
 
-            local variants={
-                table.pack(),
-                table.pack("All"),
-                table.pack(true),
-            }
+            if shouldSell() then
+                SellGuard.Selling=true
+                local before=sellSnapshot()
+                local didSell=false
 
-            if adaptiveFire("SELL",P_SellAll,variants,verify,1.5) then
-                task.wait(0.1)
-                local after=sellSnapshot()
-                local gain=0
-                if before.currency~="?" and after.currency==before.currency then
-                    gain=math.max(0,after.cash-before.cash)
+                if P_SellAll then
+                    local variants={
+                        table.pack(),
+                        table.pack("All"),
+                        table.pack(true),
+                    }
+                    didSell=adaptiveFire("SELL",P_SellAll,variants,sellVerifyFrom(before),0.95)
                 end
-                State.Earned += gain
-                State.Sold+=1
-                State.LastSell=os.clock()
-                SellPreviewCache.At=0
-                log("Sell verified"..(gain>0 and (" +$"..tostring(math.floor(gain))) or ""))
+
+                if not didSell then
+                    SellGuard.RemoteFailStreak+=1
+                    State.SellFailures=SellGuard.RemoteFailStreak
+                    didSell=npcSellFallback(before)
+                end
+
+                if didSell then
+                    task.wait(0.08)
+                    local _,after=snapshotSold(before)
+                    local gain=0
+                    if before.currency~="?" and after.currency==before.currency then
+                        gain=math.max(0,after.cash-before.cash)
+                    end
+                    State.Earned+=gain
+                    State.Sold+=1
+                    State.LastSell=os.clock()
+                    SellPreviewCache.At=0
+                    FruitCapacityCache.At=0
+                    clearSellGuard()
+                    log("Sell verified"..(gain>0 and (" +$"..tostring(math.floor(gain))) or ""))
+                else
+                    SellGuard.Selling=false
+
+                    local remaining=currentSellCountAndValue()
+                    if SellGuard.RemoteFailStreak>=2 and remaining>0 then
+                        -- A normal threshold sale that fails twice becomes urgent.
+                        -- This stops harvesting BEFORE the backpack can reach hard-full.
+                        SellGuard.ForceUntil=math.max(SellGuard.ForceUntil,os.clock()+5)
+                        SellGuard.Reason=SellGuard.Reason~="" and SellGuard.Reason or "sell retry guard"
+                        State.SellUrgent=true
+                        State.SellReason=SellGuard.Reason
+                    end
+
+                    if isSellUrgent() then
+                        -- Keep harvest paused until a sale succeeds, but do not flood
+                        -- the server with attempts: Retry Delay controls the loop.
+                        SellGuard.ForceUntil=math.max(SellGuard.ForceUntil,os.clock()+3)
+                        if os.clock()-SellGuard.LastSignal>2 then
+                            SellGuard.LastSignal=os.clock()
+                            log("Backpack full; retrying sell")
+                        end
+                    end
+                end
+            else
+                SellGuard.Selling=false
             end
+        else
+            clearSellGuard()
         end
-        task.wait(0.5)
+
+        local urgent=isSellUrgent()
+        task.wait(urgent
+            and math.max(0.15,tonumber(C("Auto Sell","Retry Delay")) or 0.25)
+            or 0.45)
     end
 end)
 
@@ -3042,6 +3474,7 @@ if C("UI","Enable")~=false then
     addLine("HarvestCap","Harvest: checking...",false)
     addLine("PlantCap","Plant: checking...",false)
     addLine("SellCap","Sell: checking...",false)
+    addLine("SellGuard","Sell Guard: checking...",false)
     addLine("SeedShopCap","Buy Seed: checking...",false)
     addLine("GearShopCap","Buy Gear: checking...",false)
     addLine("CrateShopCap","Buy Crate: checking...",false)
@@ -3195,7 +3628,7 @@ if C("UI","Enable")~=false then
             local earned=State.Earned
             local rate=elapsed>0 and earned/elapsed or 0
 
-            Labels.Fruit.Text="Fruit: "..fmt(fruit).." / "..fmt(cap)
+            Labels.Fruit.Text="Fruit: "..fmt(fruit).." / "..(cap and fmt(cap) or "?")
             Labels.Pets.Text="Pets: "..fmt(ownedPetCount()).." / "..fmt(firstNonNil(LP:GetAttribute("PetSlots"),LP:GetAttribute("MaxPets"),C("Pet","Max Slots")))
             Labels.Seeds.Text="Seeds: "..fmt(totalSeedInventory()).." total"
             Labels.Plot.Text="Plot: "..tostring(LP:GetAttribute("PlotId") or "?").." | "..(isFallWorld() and "Fall Harvest" or "Garden Valley")
@@ -3228,6 +3661,11 @@ if C("UI","Enable")~=false then
             Labels.HarvestCap.Text="Harvest: "..runtimeStatus("HARVEST")
             Labels.PlantCap.Text="Plant: "..runtimeStatus("PLANT")
             Labels.SellCap.Text="Sell: "..runtimeStatus("SELL")
+            local sgState = SellGuard.Selling and "SELLING"
+                or (isSellUrgent() and "FULL / URGENT" or "READY")
+            Labels.SellGuard.Text="Sell Guard: "..sgState
+                ..(SellGuard.Reason~="" and (" | "..SellGuard.Reason) or "")
+                ..(State.SellFailures>0 and (" | fail "..tostring(State.SellFailures)) or "")
             Labels.SeedShopCap.Text="Buy Seed: "..runtimeStatus("BUY_SEED")
             Labels.GearShopCap.Text="Buy Gear: "..runtimeStatus("BUY_GEAR")
             Labels.CrateShopCap.Text="Buy Crate: "..runtimeStatus("BUY_CRATE")
@@ -3283,6 +3721,10 @@ end)
 Controller.Stop=function()
     Alive=false
     MoveLock.owner=nil
+    for _,conn in ipairs(FullTextConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    table.clear(FullTextConnections)
     pcall(function() RunService:Set3dRenderingEnabled(true) end)
     if GUI then pcall(function() GUI:Destroy() end) end
 end
