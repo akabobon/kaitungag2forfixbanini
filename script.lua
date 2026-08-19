@@ -32,15 +32,91 @@ local StatsService = game:GetService("Stats")
 
 local LP = Players.LocalPlayer
 repeat task.wait() until LP
-repeat task.wait() until LP.Character or LP.CharacterAdded:Wait()
+
+-- BOOT UI appears before config/network initialization so execution can never
+-- fail silently just because PlayerGui/Networking is late.
+local BootGui, BootLabel
+do
+    local parent
+    pcall(function()
+        if gethui then
+            local h = gethui()
+            if h then parent = h end
+        end
+    end)
+    if not parent then
+        parent = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 10)
+    end
+    if not parent then
+        pcall(function() parent = CoreGui end)
+    end
+
+    if parent then
+        local old = parent:FindFirstChild("OneClickGAG2Boot")
+        if old then old:Destroy() end
+
+        BootGui = Instance.new("ScreenGui")
+        BootGui.Name = "OneClickGAG2Boot"
+        BootGui.ResetOnSpawn = false
+        BootGui.IgnoreGuiInset = true
+        BootGui.DisplayOrder = 100000
+        BootGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        BootGui.Parent = parent
+
+        local frame = Instance.new("Frame")
+        frame.AnchorPoint = Vector2.new(0.5,0)
+        frame.Position = UDim2.new(0.5,0,0,18)
+        frame.Size = UDim2.fromOffset(430,56)
+        frame.BackgroundColor3 = Color3.fromRGB(16,17,22)
+        frame.BorderSizePixel = 0
+        frame.Parent = BootGui
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0,12)
+        corner.Parent = frame
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(56,127,83)
+        stroke.Thickness = 2
+        stroke.Parent = frame
+
+        BootLabel = Instance.new("TextLabel")
+        BootLabel.BackgroundTransparency = 1
+        BootLabel.Position = UDim2.fromOffset(12,0)
+        BootLabel.Size = UDim2.new(1,-24,1,0)
+        BootLabel.Font = Enum.Font.Code
+        BootLabel.TextSize = 16
+        BootLabel.TextColor3 = Color3.fromRGB(230,235,230)
+        BootLabel.TextXAlignment = Enum.TextXAlignment.Left
+        BootLabel.Text = "OneClick GAG2 | Booting..."
+        BootLabel.Parent = frame
+    end
+end
+
+local function setBoot(text)
+    if BootLabel and BootLabel.Parent then
+        BootLabel.Text = "OneClick GAG2 | " .. tostring(text)
+    end
+end
+
+setBoot("checking config")
 
 local ENV = (getgenv and getgenv()) or _G
 local Config = ENV.Config
 
 if type(Config) ~= "table" then
+    setBoot("CONFIG MISSING - put getgenv().Config above loader")
     warn("[OneClick GAG2] getgenv().Config is missing. Put config above loader.")
     return
 end
+
+setBoot("config OK")
+
+task.delay(15,function()
+    if BootGui and BootGui.Parent and BootGui.Enabled and BootLabel then
+        BootLabel.Text = BootLabel.Text .. " | still loading - check F9"
+    end
+end)
 
 -- Kill an older copy cleanly.
 if ENV.__ONECLICK_GAG2_REBUILD and type(ENV.__ONECLICK_GAG2_REBUILD.Stop) == "function" then
@@ -50,7 +126,7 @@ end
 local Controller = {}
 ENV.__ONECLICK_GAG2_REBUILD = Controller
 local Alive = true
-local BUILD = "V4-SELLGUARD-2026-08-19-R1"
+local BUILD = "V4.1-BOOTSAFE-2026-08-19-R1"
 ENV.__ONECLICK_GAG2_BUILD = BUILD
 
 --==============================================================
@@ -193,28 +269,43 @@ end
 --==============================================================
 local Networking
 do
+    setBoot("finding Networking")
     local mod
-    local shared = RS:FindFirstChild("SharedModules") or RS:WaitForChild("SharedModules", 30)
-    if shared then mod = shared:FindFirstChild("Networking") or shared:WaitForChild("Networking", 15) end
-    if not mod then
-        for _, d in ipairs(RS:GetDescendants()) do
-            if d:IsA("ModuleScript") and d.Name == "Networking" then
-                mod = d
-                break
+    local deadline = os.clock() + 8
+
+    repeat
+        local shared = RS:FindFirstChild("SharedModules")
+        if shared then
+            mod = shared:FindFirstChild("Networking")
+        end
+
+        if not mod then
+            for _, d in ipairs(RS:GetDescendants()) do
+                if d:IsA("ModuleScript") and d.Name == "Networking" then
+                    mod = d
+                    break
+                end
             end
         end
-    end
+
+        if mod then break end
+        task.wait(0.2)
+    until os.clock() >= deadline
 
     if mod then
+        setBoot("loading Networking")
         local ok, res = pcall(require, mod)
         if ok and type(res) == "table" then
             Networking = res
             State.NetworkReady = true
+            setBoot("Networking READY")
         else
             errlog("require Networking", res)
+            setBoot("Networking require FAILED")
         end
     else
         errlog("Networking", "ModuleScript not found")
+        setBoot("Networking MISSING - opening UI anyway")
     end
 end
 
@@ -3306,21 +3397,36 @@ end)
 --==============================================================
 local GUI
 if C("UI","Enable")~=false then
-    local parent=LP:FindFirstChildOfClass("PlayerGui")
+    setBoot("building main UI")
+
+    local parent
     pcall(function()
         if gethui then
             local h=gethui()
             if h then parent=h end
         end
     end)
-    if not parent then parent=CoreGui end
-    local old=parent and parent:FindFirstChild("OneClickGAG2Rebuild")
+    if not parent then
+        parent=LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui",10)
+    end
+    if not parent then
+        pcall(function() parent=CoreGui end)
+    end
+
+    if not parent then
+        setBoot("UI PARENT MISSING")
+        warn("[OneClick GAG2] Could not resolve gethui/PlayerGui/CoreGui")
+        return
+    end
+
+    local old=parent:FindFirstChild("OneClickGAG2Rebuild")
     if old then old:Destroy() end
 
     GUI=Instance.new("ScreenGui")
     GUI.Name="OneClickGAG2Rebuild"
     GUI.ResetOnSpawn=false
     GUI.IgnoreGuiInset=true
+    GUI.DisplayOrder=99999
     GUI.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
     GUI.Parent=parent
 
@@ -3680,6 +3786,10 @@ if C("UI","Enable")~=false then
             task.wait(.5)
         end
     end)
+end
+
+if BootGui and BootGui.Parent then
+    BootGui.Enabled=false
 end
 
 --==============================================================
